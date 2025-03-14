@@ -9,79 +9,18 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import {
-  Users,
-  MessageSquare,
-  FolderKanban,
-  FileText,
-  Edit,
-} from "lucide-react";
+import { Users, MessageSquare, FolderKanban, FileText } from "lucide-react";
 import _ from "lodash";
 
 import MetricCard from "./shared/MetricCard";
 import SortableTable from "./shared/SortableTable";
 
-// Project name storage helper functions
-const getProjectNames = () => {
-  try {
-    const storedNames = localStorage.getItem("claude-project-names");
-    return storedNames ? JSON.parse(storedNames) : {};
-  } catch (e) {
-    console.error("Error loading project names from localStorage:", e);
-    return {};
-  }
-};
-
-const saveProjectName = (uuid, name) => {
-  try {
-    const currentNames = getProjectNames();
-    const updatedNames = { ...currentNames, [uuid]: name };
-    localStorage.setItem("claude-project-names", JSON.stringify(updatedNames));
-    return true;
-  } catch (e) {
-    console.error("Error saving project names to localStorage:", e);
-    return false;
-  }
-};
+// No longer need project name helper functions since we'll use the name field directly
 
 const Dashboard = ({ fileData }) => {
   const [activeTab, setActiveTab] = useState("overview");
   const [metrics, setMetrics] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [projectNames, setProjectNames] = useState({});
-  const [editingProject, setEditingProject] = useState(null);
-  const [newProjectName, setNewProjectName] = useState("");
-
-  // Load saved project names from localStorage
-  useEffect(() => {
-    setProjectNames(getProjectNames());
-  }, []);
-
-  // Function to handle saving a project name
-  const handleSaveProjectName = (uuid) => {
-    if (newProjectName.trim()) {
-      saveProjectName(uuid, newProjectName.trim());
-
-      // Update local state with new name
-      setProjectNames({
-        ...projectNames,
-        [uuid]: newProjectName.trim(),
-      });
-
-      // Reset editing state
-      setEditingProject(null);
-      setNewProjectName("");
-    }
-  };
-
-  // Get display name for a project (custom name or UUID)
-  const getProjectDisplayName = (project) => {
-    const uuid = project.uuid || "unnamed";
-    if (projectNames[uuid]) {
-      return projectNames[uuid];
-    }
-    return uuid;
-  };
 
   useEffect(() => {
     if (!fileData) {
@@ -125,7 +64,7 @@ const Dashboard = ({ fileData }) => {
               conversations: 0,
               projects: 0,
               files: 0,
-              lastSeen: userData.date || new Date(),
+              lastSeen: userData.date,
             };
           }
 
@@ -140,7 +79,7 @@ const Dashboard = ({ fileData }) => {
               conversations: 0,
               projects: 0,
               files: 0,
-              lastSeen: userData.date || new Date(),
+              lastSeen: userData.date,
             };
           }
         });
@@ -267,7 +206,7 @@ const Dashboard = ({ fileData }) => {
                 conversations: 0,
                 projects: 1, // This is their first project
                 files: 0,
-                lastSeen: row.date || new Date(),
+                lastSeen: row.date,
               };
               console.log(`Created new user from project: ${email}`);
             }
@@ -330,7 +269,7 @@ const Dashboard = ({ fileData }) => {
               conversations: 0,
               projects: 0,
               files: 0,
-              lastSeen: row.date || new Date(),
+              lastSeen: row.date,
             };
           }
 
@@ -654,58 +593,10 @@ const Dashboard = ({ fileData }) => {
     return <div className="p-4 text-center">Processing data...</div>;
   }
 
-  // Project rename form component
-  const ProjectRenameForm = ({ project }) => (
-    <div className="flex items-center space-x-2">
-      <input
-        type="text"
-        value={newProjectName}
-        onChange={(e) => setNewProjectName(e.target.value)}
-        placeholder="Enter project name"
-        className="px-2 py-1 border border-gray-300 rounded text-sm flex-grow"
-        autoFocus
-      />
-      <button
-        onClick={() => handleSaveProjectName(project.uuid)}
-        className="bg-blue-500 text-white px-2 py-1 rounded text-sm"
-      >
-        Save
-      </button>
-      <button
-        onClick={() => {
-          setEditingProject(null);
-          setNewProjectName("");
-        }}
-        className="bg-gray-300 text-gray-700 px-2 py-1 rounded text-sm"
-      >
-        Cancel
-      </button>
-    </div>
-  );
-
-  // ProjectName component with edit functionality
+  // Simple project name display component that prioritizes the name field
   const ProjectName = ({ project }) => {
-    const isEditing = editingProject === project.uuid;
-    const displayName = getProjectDisplayName(project);
-
-    if (isEditing) {
-      return <ProjectRenameForm project={project} />;
-    }
-
     return (
-      <div className="flex items-center space-x-2">
-        <span className="truncate">{displayName}</span>
-        <button
-          onClick={() => {
-            setEditingProject(project.uuid);
-            setNewProjectName(projectNames[project.uuid] || "");
-          }}
-          className="text-gray-500 hover:text-blue-500 focus:outline-none"
-          title="Rename project"
-        >
-          <Edit size={14} />
-        </button>
-      </div>
+      <span className="truncate">{project.name || "Unnamed Project"}</span>
     );
   };
 
@@ -853,26 +744,16 @@ const Dashboard = ({ fileData }) => {
                           .sort((a, b) => new Date(b.date) - new Date(a.date))
                           .slice(0, 5)
                           .map((project, index) => {
-                            // Find user associated with this project
-                            const userEmail =
-                              project.email || project.email_address || "";
-                            const userUuid = project.user_uuid || "";
+                            // Get creator name - either directly from project or via user lookup
+                            let creatorName = project.creator_name || "Unknown";
 
-                            // Look up user by email or UUID
-                            let userName = "Unknown";
-                            if (userEmail && metrics.userMetrics) {
-                              const userByEmail = metrics.userMetrics.find(
-                                (u) => u.email === userEmail
-                              );
-                              if (userByEmail) {
-                                userName = userByEmail.name;
-                              }
-                            } else if (userUuid && metrics.userMetrics) {
+                            // If no creator name but we have UUID, try to look it up
+                            if (!creatorName && project.user_uuid) {
                               const userByUuid = metrics.userMetrics.find(
-                                (u) => u.uuid === userUuid
+                                (u) => u.uuid === project.user_uuid
                               );
                               if (userByUuid) {
-                                userName = userByUuid.name;
+                                creatorName = userByUuid.name;
                               }
                             }
 
@@ -882,13 +763,23 @@ const Dashboard = ({ fileData }) => {
                                 className={index % 2 === 0 ? "bg-gray-50" : ""}
                               >
                                 <td className="px-4 py-2 text-sm w-1/2">
-                                  <ProjectName project={project} />
+                                  <div className="flex items-center">
+                                    <ProjectName project={project} />
+                                    {project.document_count > 0 && (
+                                      <span className="ml-2 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full">
+                                        {project.document_count} doc
+                                        {project.document_count !== 1
+                                          ? "s"
+                                          : ""}
+                                      </span>
+                                    )}
+                                  </div>
                                 </td>
                                 <td className="px-4 py-2 text-sm">
                                   {project.filename || "-"}
                                 </td>
                                 <td className="px-4 py-2 text-sm">
-                                  {userName}
+                                  {creatorName}
                                 </td>
                                 <td className="px-4 py-2 text-sm">
                                   {(() => {
@@ -1060,26 +951,17 @@ const Dashboard = ({ fileData }) => {
                               )
                               .slice(0, 5)
                               .map((project, index) => {
-                                // Find user associated with this project
-                                const userEmail =
-                                  project.email || project.email_address || "";
-                                const userUuid = project.user_uuid || "";
+                                // Get creator name - either directly from project or via user lookup
+                                let creatorName =
+                                  project.creator_name || "Unknown";
 
-                                // Look up user by email or UUID
-                                let userName = "Unknown";
-                                if (userEmail && metrics.userMetrics) {
-                                  const userByEmail = metrics.userMetrics.find(
-                                    (u) => u.email === userEmail
-                                  );
-                                  if (userByEmail) {
-                                    userName = userByEmail.name;
-                                  }
-                                } else if (userUuid && metrics.userMetrics) {
+                                // If no creator name but we have UUID, try to look it up
+                                if (!creatorName && project.user_uuid) {
                                   const userByUuid = metrics.userMetrics.find(
-                                    (u) => u.uuid === userUuid
+                                    (u) => u.uuid === project.user_uuid
                                   );
                                   if (userByUuid) {
-                                    userName = userByUuid.name;
+                                    creatorName = userByUuid.name;
                                   }
                                 }
 
@@ -1091,10 +973,20 @@ const Dashboard = ({ fileData }) => {
                                     }
                                   >
                                     <td className="px-4 py-2 text-sm">
-                                      <ProjectName project={project} />
+                                      <div className="flex items-center">
+                                        <ProjectName project={project} />
+                                        {project.document_count > 0 && (
+                                          <span className="ml-2 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full">
+                                            {project.document_count} doc
+                                            {project.document_count !== 1
+                                              ? "s"
+                                              : ""}
+                                          </span>
+                                        )}
+                                      </div>
                                     </td>
                                     <td className="px-4 py-2 text-sm">
-                                      {userName}
+                                      {creatorName}
                                     </td>
                                     <td className="px-4 py-2 text-sm text-center">
                                       {project.conversationCount}
@@ -1161,16 +1053,64 @@ const Dashboard = ({ fileData }) => {
           <div className="bg-white p-4 rounded-lg shadow">
             <h3 className="text-lg font-medium mb-4">User Information</h3>
             <SortableTable
-              data={metrics.realUserMetrics.map((user) => ({
-                name: user.name,
-                email: user.email,
-                phone: user.phone || "Not provided",
-                uuid: user.uuid || "N/A",
-                totalActivities: user.totalActions,
-                conversations: user.conversations,
-                projects: user.projects,
-                lastSeen: user.lastSeen,
-              }))}
+              data={metrics.realUserMetrics.map((user) => {
+                // Find all activities for this user
+                const userConversations = metrics.conversationData.filter(
+                  (row) =>
+                    row.email === user.email ||
+                    row.email_address === user.email ||
+                    (row.user_uuid && row.user_uuid === user.uuid)
+                );
+
+                const userProjects = metrics.projectData.filter(
+                  (row) =>
+                    row.email === user.email ||
+                    row.email_address === user.email ||
+                    (row.user_uuid && row.user_uuid === user.uuid)
+                );
+
+                // Calculate last seen date from the user's actual activity history
+                let lastSeenDate = user.lastSeen;
+
+                // Check conversations
+                if (userConversations.length > 0) {
+                  // Extract and validate dates from conversations
+                  const validDates = userConversations
+                    .map((conv) => new Date(conv.date))
+                    .filter((date) => !isNaN(date.getTime()));
+
+                  // Sort dates in descending order and get the most recent one
+                  if (validDates.length > 0) {
+                    validDates.sort((a, b) => b.getTime() - a.getTime());
+                    lastSeenDate = validDates[0];
+                  }
+                }
+
+                // Check projects (if no conversation date was found)
+                if (userProjects.length > 0 && !lastSeenDate) {
+                  // Extract and validate dates from projects
+                  const validDates = userProjects
+                    .map((proj) => new Date(proj.date))
+                    .filter((date) => !isNaN(date.getTime()));
+
+                  // Sort dates in descending order and get the most recent one
+                  if (validDates.length > 0) {
+                    validDates.sort((a, b) => b.getTime() - a.getTime());
+                    lastSeenDate = validDates[0];
+                  }
+                }
+
+                return {
+                  name: user.name,
+                  email: user.email,
+                  phone: user.phone || "Not provided",
+                  uuid: user.uuid || "N/A",
+                  totalActivities: user.totalActions,
+                  conversations: user.conversations,
+                  projects: user.projects,
+                  lastSeen: lastSeenDate,
+                };
+              })}
               columns={[
                 { key: "name", label: "Name" },
                 { key: "email", label: "Email" },
@@ -1187,7 +1127,7 @@ const Dashboard = ({ fileData }) => {
                     } else if (date) {
                       return "Invalid date";
                     } else {
-                      return "Never";
+                      return "No activity yet";
                     }
                   },
                 },
@@ -1302,7 +1242,7 @@ const Dashboard = ({ fileData }) => {
                       } else if (date) {
                         return "Invalid date";
                       } else {
-                        return "Never";
+                        return "No activity yet";
                       }
                     },
                   },
@@ -1406,18 +1346,14 @@ const Dashboard = ({ fileData }) => {
                             <th className="px-4 py-2 text-left">
                               Project Name
                             </th>
-                            <th className="px-4 py-2 text-left">User</th>
+                            <th className="px-4 py-2 text-left">Creator</th>
+                            <th className="px-4 py-2 text-center">Documents</th>
+                            <th className="px-4 py-2 text-left">Date</th>
                             <th className="px-4 py-2 text-center">
                               Last 7 Days
                             </th>
                             <th className="px-4 py-2 text-center">
                               Last 30 Days
-                            </th>
-                            <th className="px-4 py-2 text-center">
-                              Total Conversations
-                            </th>
-                            <th className="px-4 py-2 text-left">
-                              Last Conversation
                             </th>
                           </tr>
                         </thead>
@@ -1430,26 +1366,17 @@ const Dashboard = ({ fileData }) => {
                             )
                             .slice(0, 10)
                             .map((project, index) => {
-                              // Find user associated with this project
-                              const userEmail =
-                                project.email || project.email_address || "";
-                              const userUuid = project.user_uuid || "";
+                              // Get creator name - either directly from project or via user lookup
+                              let creatorName =
+                                project.creator_name || "Unknown";
 
-                              // Look up user by email or UUID
-                              let userName = "Unknown";
-                              if (userEmail && metrics.userMetrics) {
-                                const userByEmail = metrics.userMetrics.find(
-                                  (u) => u.email === userEmail
-                                );
-                                if (userByEmail) {
-                                  userName = userByEmail.name;
-                                }
-                              } else if (userUuid && metrics.userMetrics) {
+                              // If no creator name but we have UUID, try to look it up
+                              if (!creatorName && project.user_uuid) {
                                 const userByUuid = metrics.userMetrics.find(
-                                  (u) => u.uuid === userUuid
+                                  (u) => u.uuid === project.user_uuid
                                 );
                                 if (userByUuid) {
-                                  userName = userByUuid.name;
+                                  creatorName = userByUuid.name;
                                 }
                               }
 
@@ -1461,62 +1388,61 @@ const Dashboard = ({ fileData }) => {
                                   }
                                 >
                                   <td className="px-4 py-2 text-sm">
-                                    <ProjectName project={project} />
+                                    <div className="flex items-center">
+                                      <ProjectName project={project} />
+                                      {project.document_count > 0 && (
+                                        <span className="ml-2 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full">
+                                          {project.document_count} doc
+                                          {project.document_count !== 1
+                                            ? "s"
+                                            : ""}
+                                        </span>
+                                      )}
+                                    </div>
                                   </td>
                                   <td className="px-4 py-2 text-sm">
-                                    {userName}
+                                    {creatorName}
                                   </td>
                                   <td className="px-4 py-2 text-sm text-center">
-                                    {project.last7DaysConversations}
-                                  </td>
-                                  <td className="px-4 py-2 text-sm text-center">
-                                    {project.last30DaysConversations}
-                                  </td>
-                                  <td className="px-4 py-2 text-sm text-center">
-                                    {project.conversationCount}
+                                    {project.document_count || 0}
                                   </td>
                                   <td className="px-4 py-2 text-sm">
-                                    {project.conversationCount > 0
-                                      ? (() => {
-                                          try {
-                                            const projectConvs =
-                                              metrics.projectConversations.filter(
-                                                (conv) =>
-                                                  conv.project_uuid ===
-                                                    project.uuid ||
-                                                  conv.project_id ===
-                                                    project.uuid
-                                              );
-
-                                            if (projectConvs.length === 0)
-                                              return "N/A";
-
-                                            const validDates = projectConvs
-                                              .map((conv) => {
-                                                const date = new Date(
-                                                  conv.date
-                                                );
-                                                return isNaN(date.getTime())
-                                                  ? null
-                                                  : date.getTime();
-                                              })
-                                              .filter((time) => time !== null);
-
-                                            if (validDates.length === 0)
-                                              return "Invalid date";
-
-                                            return new Date(
-                                              Math.max(...validDates)
-                                            ).toLocaleDateString();
-                                          } catch (error) {
-                                            console.error(
-                                              "Error formatting conversation date:",
-                                              error
-                                            );
-                                            return "Error";
-                                          }
-                                        })()
-                                      : "N/A"}
+                                    {(() => {
+                                      try {
+                                        const date = new Date(project.date);
+                                        return !isNaN(date.getTime())
+                                          ? date.toLocaleDateString()
+                                          : "Invalid date";
+                                      } catch (error) {
+                                        return "Error";
+                                      }
+                                    })()}
+                                  </td>
+                                  <td className="px-4 py-2 text-sm text-center">
+                                    {(() => {
+                                      try {
+                                        const date = new Date(project.date);
+                                        return !isNaN(date.getTime()) &&
+                                          date >= metrics.sevenDaysAgo
+                                          ? "✓"
+                                          : "-";
+                                      } catch (error) {
+                                        return "-";
+                                      }
+                                    })()}
+                                  </td>
+                                  <td className="px-4 py-2 text-sm text-center">
+                                    {(() => {
+                                      try {
+                                        const date = new Date(project.date);
+                                        return !isNaN(date.getTime()) &&
+                                          date >= metrics.thirtyDaysAgo
+                                          ? "✓"
+                                          : "-";
+                                      } catch (error) {
+                                        return "-";
+                                      }
+                                    })()}
                                   </td>
                                 </tr>
                               );
@@ -1586,7 +1512,7 @@ const Dashboard = ({ fileData }) => {
                     key: "lastProject",
                     label: "Last Project",
                     format: (date) =>
-                      date ? date.toLocaleDateString() : "Never",
+                      date ? date.toLocaleDateString() : "No activity yet",
                   },
                 ]}
               />
@@ -1620,9 +1546,8 @@ const Dashboard = ({ fileData }) => {
                   <thead>
                     <tr className="bg-gray-100">
                       <th className="px-4 py-2 text-left">Project Name</th>
-                      <th className="px-4 py-2 text-left">Filename</th>
-                      <th className="px-4 py-2 text-left">UUID</th>
-                      <th className="px-4 py-2 text-left">User</th>
+                      <th className="px-4 py-2 text-left">Creator</th>
+                      <th className="px-4 py-2 text-center">Documents</th>
                       <th className="px-4 py-2 text-left">Date</th>
                       <th className="px-4 py-2 text-center">Last 7 Days</th>
                       <th className="px-4 py-2 text-center">Last 30 Days</th>
@@ -1632,26 +1557,16 @@ const Dashboard = ({ fileData }) => {
                     {metrics.projectData
                       .sort((a, b) => new Date(b.date) - new Date(a.date))
                       .map((project, index) => {
-                        // Find user associated with this project
-                        const userEmail =
-                          project.email || project.email_address || "";
-                        const userUuid = project.user_uuid || "";
+                        // Get creator name - either directly from project or via user lookup
+                        let creatorName = project.creator_name || "Unknown";
 
-                        // Look up user by email or UUID
-                        let userName = "Unknown";
-                        if (userEmail && metrics.userMetrics) {
-                          const userByEmail = metrics.userMetrics.find(
-                            (u) => u.email === userEmail
-                          );
-                          if (userByEmail) {
-                            userName = userByEmail.name;
-                          }
-                        } else if (userUuid && metrics.userMetrics) {
+                        // If no creator name but we have UUID, try to look it up
+                        if (!creatorName && project.user_uuid) {
                           const userByUuid = metrics.userMetrics.find(
-                            (u) => u.uuid === userUuid
+                            (u) => u.uuid === project.user_uuid
                           );
                           if (userByUuid) {
-                            userName = userByUuid.name;
+                            creatorName = userByUuid.name;
                           }
                         }
 
@@ -1661,15 +1576,20 @@ const Dashboard = ({ fileData }) => {
                             className={index % 2 === 0 ? "bg-gray-50" : ""}
                           >
                             <td className="px-4 py-2 text-sm">
-                              <ProjectName project={project} />
+                              <div className="flex items-center">
+                                <ProjectName project={project} />
+                                {project.document_count > 0 && (
+                                  <span className="ml-2 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full">
+                                    {project.document_count} doc
+                                    {project.document_count !== 1 ? "s" : ""}
+                                  </span>
+                                )}
+                              </div>
                             </td>
-                            <td className="px-4 py-2 text-sm">
-                              {project.filename || "-"}
+                            <td className="px-4 py-2 text-sm">{creatorName}</td>
+                            <td className="px-4 py-2 text-sm text-center">
+                              {project.document_count || 0}
                             </td>
-                            <td className="px-4 py-2 text-sm text-gray-500">
-                              {project.uuid || "N/A"}
-                            </td>
-                            <td className="px-4 py-2 text-sm">{userName}</td>
                             <td className="px-4 py-2 text-sm">
                               {(() => {
                                 try {

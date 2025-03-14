@@ -186,8 +186,7 @@ const FileUpload = ({ onFileUpload }) => {
               verified_phone_number: user.verified_phone_number,
               phone: user.verified_phone_number,
               source: "users.json",
-              date: new Date(), // Add current date for consistency
-              dateStr: new Date().toISOString().split("T")[0],
+              // Don't set a default date for users, let their last activity determine this
             };
           });
 
@@ -293,12 +292,27 @@ const FileUpload = ({ onFileUpload }) => {
 
               console.log(`Project date: ${itemDate.toISOString()}`);
 
+              // Extract creator information if available
+              const creatorUuid = item.creator?.uuid || "";
+              const creatorName = item.creator?.full_name || "";
+
+              // Count documents if available
+              const documentCount = item.documents?.length || 0;
+
               return {
                 ...item,
-                // We'll use filename as a display name for the project
-                name: item.filename || "Unnamed Project",
-                // Store any UUID we can find to link to users later
-                user_uuid: userUuid,
+                // Keep original name if it exists, otherwise fallback to appropriate defaults
+                name:
+                  item.name ||
+                  item.title ||
+                  item.project_name ||
+                  item.filename ||
+                  "Unnamed Project",
+                // Store creator information
+                user_uuid: creatorUuid || userUuid,
+                creator_name: creatorName,
+                // Document count
+                document_count: documentCount,
                 source: file.name,
                 event: "project_created", // Add event type for consistent filtering
                 date: itemDate,
