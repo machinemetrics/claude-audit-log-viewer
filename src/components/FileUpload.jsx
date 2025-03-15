@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
-import Papa from "papaparse";
 import { Upload } from "lucide-react";
+import JSZip from "jszip";
 
 const FileUpload = ({ onFileUpload }) => {
   const [isDragging, setIsDragging] = useState(false);
@@ -49,13 +49,20 @@ const FileUpload = ({ onFileUpload }) => {
   };
 
   const processFile = (file) => {
-    // Check if the file is either a CSV or JSON file
-    const isCSV = file.type === "text/csv" || file.name.endsWith(".csv");
+    // Check if the file is a zip file
+    const isZip = file.type === "application/zip" || file.name.endsWith(".zip");
+
+    // Check if the file is a JSON file
     const isJSON =
       file.type === "application/json" || file.name.endsWith(".json");
 
-    if (!isCSV && !isJSON) {
-      setError("Please upload CSV or JSON files only");
+    if (isZip) {
+      processZipFile(file);
+      return;
+    }
+
+    if (!isJSON) {
+      setError("Please upload JSON or ZIP files only");
       return;
     }
 
@@ -74,78 +81,8 @@ const FileUpload = ({ onFileUpload }) => {
       try {
         const fileData = event.target.result;
 
-        // Process differently based on file type
-        if (isJSON) {
-          // Parse JSON file
-          processJSONFile(file, uploadedFiles);
-        } else {
-          // Parse CSV file with PapaParse
-          Papa.parse(fileData, {
-            header: true,
-            dynamicTyping: true,
-            skipEmptyLines: "greedy",
-            complete: (results) => {
-              if (results.errors.length > 0) {
-                setError(
-                  `Error parsing CSV in ${file.name}: ${results.errors[0].message}`
-                );
-                setIsLoading(false);
-                return;
-              }
-
-              const processedFileData = results.data.map((row) => {
-                try {
-                  const actorInfo =
-                    typeof row.actor_info === "string"
-                      ? JSON.parse(row.actor_info.replace(/'/g, '"'))
-                      : row.actor_info;
-
-                  return {
-                    ...row,
-                    email:
-                      row.email_address ||
-                      actorInfo?.metadata?.email_address ||
-                      "Unknown",
-                    userName: row.full_name || actorInfo?.name || "Unknown",
-                    date: new Date(row.created_at || Date.now()),
-                    dateStr: new Date(row.created_at || Date.now())
-                      .toISOString()
-                      .split("T")[0],
-                    source: file.name,
-                  };
-                } catch (e) {
-                  // If JSON parsing fails, return row with defaults
-                  return {
-                    ...row,
-                    email: row.email_address || "Unknown",
-                    userName: row.full_name || "Unknown",
-                    date: new Date(row.created_at || Date.now()),
-                    dateStr: new Date(row.created_at || Date.now())
-                      .toISOString()
-                      .split("T")[0],
-                    source: file.name,
-                  };
-                }
-              });
-
-              // Store the processed data as an array
-              setProcessedData((prevData) => [
-                ...prevData,
-                ...processedFileData,
-              ]);
-
-              // Add file name to uploaded files
-              setUploadedFiles((prev) => [...prev, file.name]);
-              setIsLoading(false);
-
-              // No need to call checkAllFilesUploaded here, the useEffect will handle it
-            },
-            error: (error) => {
-              setError(`Error parsing CSV in ${file.name}: ${error.message}`);
-              setIsLoading(false);
-            },
-          });
-        }
+        // Process JSON file
+        processJSONFile(file, uploadedFiles);
       } catch (error) {
         setError(`Error reading file ${file.name}: ${error.message}`);
         setIsLoading(false);
@@ -296,8 +233,9 @@ const FileUpload = ({ onFileUpload }) => {
               const creatorUuid = item.creator?.uuid || "";
               const creatorName = item.creator?.full_name || "";
 
-              // Count documents if available
-              const documentCount = item.documents?.length || 0;
+              // Count documents if available - check both 'documents' and 'docs' arrays
+              const documentCount =
+                item.docs?.length || item.documents?.length || 0;
 
               return {
                 ...item,
@@ -455,6 +393,267 @@ const FileUpload = ({ onFileUpload }) => {
     reader.readAsText(file);
   };
 
+  const processZipFile = (file) => {
+    setIsLoading(true);
+    setError(null);
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const zip = new JSZip();
+        const zipContent = await zip.loadAsync(event.target.result);
+
+        console.log(
+          "Processing zip file with files:",
+          Object.keys(zipContent.files)
+        );
+
+        // Track how many files we've processed
+        let processedCount = 0;
+        const totalFiles = Object.keys(zipContent.files).filter(
+          (filename) => !zipContent.files[filename].dir
+        ).length;
+
+        // Process each file in the zip
+        const promises = [];
+
+        zipContent.forEach((relativePath, zipEntry) => {
+          // Skip directories
+          if (zipEntry.dir) return;
+
+          // Check if this is one of our expected files
+          const isExpectedFile = EXPECTED_FILES.some((expectedFile) =>
+            relativePath.endsWith(expectedFile)
+          );
+
+          // Skip processing if file already uploaded
+          if (uploadedFiles.includes(relativePath)) {
+            console.log(`File ${relativePath} already uploaded, skipping`);
+            processedCount++;
+            return;
+          }
+
+          // Process the file
+          const promise = zipEntry.async("string").then((content) => {
+            try {
+              // For JSON files
+              if (relativePath.endsWith(".json")) {
+                const jsonData = JSON.parse(content);
+
+                // Determine which type of file this is
+                if (
+                  relativePath.includes("conversations") ||
+                  relativePath.endsWith("conversations.json")
+                ) {
+                  processJsonContent(jsonData, "conversations.json");
+                } else if (
+                  relativePath.includes("projects") ||
+                  relativePath.endsWith("projects.json")
+                ) {
+                  processJsonContent(jsonData, "projects.json");
+                } else if (
+                  relativePath.includes("users") ||
+                  relativePath.endsWith("users.json")
+                ) {
+                  processJsonContent(jsonData, "users.json");
+                } else {
+                  // Generic JSON processing
+                  processJsonContent(jsonData, relativePath);
+                }
+              }
+
+              processedCount++;
+              console.log(
+                `Processed ${processedCount} of ${totalFiles} files from zip`
+              );
+            } catch (error) {
+              console.error(
+                `Error processing ${relativePath} from zip:`,
+                error
+              );
+            }
+          });
+
+          promises.push(promise);
+        });
+
+        // Wait for all files to be processed
+        await Promise.all(promises);
+
+        console.log("Finished processing zip file");
+        setIsLoading(false);
+
+        // Check if we have all the files we need
+        checkAllFilesUploaded();
+      } catch (error) {
+        console.error("Error processing zip file:", error);
+        setError(`Error processing zip file: ${error.message}`);
+        setIsLoading(false);
+      }
+    };
+
+    reader.onerror = () => {
+      setError(`Error reading the zip file ${file.name}`);
+      setIsLoading(false);
+    };
+
+    reader.readAsArrayBuffer(file);
+  };
+
+  // Helper function to process JSON content from zip files
+  const processJsonContent = (jsonData, filename) => {
+    // Use the existing JSON processing logic based on filename
+    if (filename === "users.json") {
+      // Handle users.json
+      const processedUserData = Array.isArray(jsonData)
+        ? jsonData.map((user) => {
+            return {
+              uuid: user.uuid,
+              full_name: user.full_name,
+              name: user.full_name,
+              userName: user.full_name,
+              email_address: user.email_address,
+              email: user.email_address,
+              verified_phone_number: user.verified_phone_number,
+              phone: user.verified_phone_number,
+              source: "users.json",
+            };
+          })
+        : [];
+
+      setProcessedData((prevData) => [...prevData, ...processedUserData]);
+      setUploadedFiles((prev) => [...prev, "users.json"]);
+    } else if (filename === "conversations.json") {
+      // Handle conversations.json
+      let processedFileData = [];
+
+      if (Array.isArray(jsonData)) {
+        processedFileData = jsonData.map((item) => {
+          // Extract the account UUID if available
+          let userUuid = "";
+          if (item.account && item.account.uuid) {
+            userUuid = item.account.uuid;
+          }
+
+          // Process the date
+          let itemDate;
+          if (item.created_at) {
+            itemDate = new Date(item.created_at);
+          } else {
+            itemDate = new Date(item.timestamp || item.date || Date.now());
+          }
+
+          return {
+            ...item,
+            user_uuid: userUuid,
+            source: "conversations.json",
+            date: itemDate,
+            dateStr: itemDate.toISOString().split("T")[0],
+            event: "conversation_created",
+          };
+        });
+      } else if (jsonData) {
+        processedFileData = [
+          {
+            ...jsonData,
+            source: "conversations.json",
+            date: new Date(),
+            dateStr: new Date().toISOString().split("T")[0],
+            event: "conversation_created",
+          },
+        ];
+      }
+
+      setProcessedData((prevData) => [...prevData, ...processedFileData]);
+      setUploadedFiles((prev) => [...prev, "conversations.json"]);
+    } else if (filename === "projects.json") {
+      // Handle projects.json
+      let processedFileData = [];
+
+      if (Array.isArray(jsonData)) {
+        processedFileData = jsonData.map((item) => {
+          // Process the date
+          let itemDate;
+          if (item.created_at) {
+            itemDate = new Date(item.created_at);
+          } else {
+            itemDate = new Date(item.timestamp || item.date || Date.now());
+          }
+
+          // Extract creator information
+          const creatorUuid = item.creator?.uuid || "";
+          const creatorName = item.creator?.full_name || "";
+
+          // Count documents
+          const documentCount =
+            item.docs?.length || item.documents?.length || 0;
+
+          return {
+            ...item,
+            name:
+              item.name ||
+              item.title ||
+              item.project_name ||
+              item.filename ||
+              "Unnamed Project",
+            user_uuid: creatorUuid,
+            creator_name: creatorName,
+            document_count: documentCount,
+            source: "projects.json",
+            event: "project_created",
+            date: itemDate,
+            dateStr: itemDate.toISOString().split("T")[0],
+          };
+        });
+      } else if (jsonData) {
+        processedFileData = [
+          {
+            ...jsonData,
+            source: "projects.json",
+            date: new Date(),
+            dateStr: new Date().toISOString().split("T")[0],
+            event: "project_created",
+          },
+        ];
+      }
+
+      setProcessedData((prevData) => [...prevData, ...processedFileData]);
+      setUploadedFiles((prev) => [...prev, "projects.json"]);
+    } else {
+      // Generic JSON handling for other files
+      let processedFileData = [];
+
+      if (Array.isArray(jsonData)) {
+        processedFileData = jsonData.map((item) => {
+          return {
+            ...item,
+            source: filename,
+            date: new Date(
+              item.timestamp || item.created_at || item.date || Date.now()
+            ),
+            dateStr: new Date(
+              item.timestamp || item.created_at || item.date || Date.now()
+            )
+              .toISOString()
+              .split("T")[0],
+          };
+        });
+      } else if (jsonData) {
+        processedFileData = [
+          {
+            ...jsonData,
+            source: filename,
+            date: new Date(),
+            dateStr: new Date().toISOString().split("T")[0],
+          },
+        ];
+      }
+
+      setProcessedData((prevData) => [...prevData, ...processedFileData]);
+      setUploadedFiles((prev) => [...prev, filename]);
+    }
+  };
+
   const checkAllFilesUploaded = () => {
     console.log("Checking files:", uploadedFiles); // Debug logging
 
@@ -505,7 +704,7 @@ const FileUpload = ({ onFileUpload }) => {
         <input
           id="file-upload"
           type="file"
-          accept=".csv,.json,application/json,text/csv"
+          accept=".json,.zip,application/json,application/zip"
           multiple
           className="hidden"
           onChange={handleFileSelect}
@@ -513,11 +712,51 @@ const FileUpload = ({ onFileUpload }) => {
         <Upload className="h-12 w-12 text-gray-400 mx-auto mb-4" />
         <h3 className="text-lg font-semibold mb-2">Upload Audit Log Files</h3>
         <p className="text-sm text-gray-500 mb-2">
-          Drag and drop your CSV or JSON files here, or click to browse
+          Drag and drop your JSON or ZIP files here, or click to browse
         </p>
         <p className="text-xs text-gray-400 mb-4">
-          Upload conversations.json, projects.json, and users.json
+          Upload conversations.json, projects.json, users.json, or a ZIP file
+          containing these files
         </p>
+
+        {/* Instructions on how to export data from Claude */}
+        <div className="mt-2 mb-4 p-4 bg-blue-50 rounded-md text-left">
+          <h4 className="text-sm font-semibold text-blue-700 mb-2">
+            How to export data from Claude:
+          </h4>
+          <ol className="text-xs text-blue-600 list-decimal pl-4 space-y-1">
+            <li>Log in to your Claude account</li>
+            <li>
+              Go to <strong>Settings</strong> (usually found in the profile
+              menu)
+            </li>
+            <li>
+              Select <strong>Account</strong> tab
+            </li>
+            <li>
+              Click on <strong>Export Data</strong>
+            </li>
+            <li>
+              You will receive a download link in your email with a zip file
+            </li>
+            <li>Download and extract the zip file</li>
+            <li>
+              Upload either the zip file directly or the extracted files:
+              <ul className="list-disc pl-4 mt-1">
+                <li>
+                  <strong>conversations.json</strong> - Contains conversation
+                  history
+                </li>
+                <li>
+                  <strong>projects.json</strong> - Contains project information
+                </li>
+                <li>
+                  <strong>users.json</strong> - Contains user data
+                </li>
+              </ul>
+            </li>
+          </ol>
+        </div>
 
         {/* File upload status */}
         <div className="mt-2 text-left">

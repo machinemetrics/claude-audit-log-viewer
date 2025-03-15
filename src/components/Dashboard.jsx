@@ -8,8 +8,10 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
+  BarChart,
+  Bar,
 } from "recharts";
-import { Users, MessageSquare, FolderKanban, FileText } from "lucide-react";
+import { Users, MessageSquare, FolderKanban, FileText, X } from "lucide-react";
 import _ from "lodash";
 
 import MetricCard from "./shared/MetricCard";
@@ -21,6 +23,8 @@ const Dashboard = ({ fileData }) => {
   const [activeTab, setActiveTab] = useState("overview");
   const [metrics, setMetrics] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedPeriod, setSelectedPeriod] = useState(null);
+  const [showModal, setShowModal] = useState(false);
 
   useEffect(() => {
     if (!fileData) {
@@ -30,6 +34,45 @@ const Dashboard = ({ fileData }) => {
 
     const processData = () => {
       try {
+        // Helper function to get the first day of the week (Sunday) for a given date
+        const getFirstDayOfWeek = (date) => {
+          const dayOfWeek = date.getDay(); // 0 = Sunday, 1 = Monday, etc.
+          const firstDayOfWeek = new Date(date);
+          // Set to first day of week (Sunday)
+          firstDayOfWeek.setDate(date.getDate() - dayOfWeek);
+          return firstDayOfWeek;
+        };
+
+        // Helper function to format a week range consistently
+        const formatWeekRange = (weekStartDate) => {
+          const weekDate = new Date(weekStartDate);
+
+          // Calculate week number (1-52)
+          const startOfYear = new Date(weekDate.getFullYear(), 0, 1);
+          const weekNum = Math.ceil(
+            ((weekDate - startOfYear) / 86400000 + startOfYear.getDay() + 1) / 7
+          );
+
+          // Calculate the end date of the week (Saturday)
+          const endOfWeek = new Date(weekDate);
+          endOfWeek.setDate(weekDate.getDate() + 6); // Add 6 days to get to Saturday
+
+          // Format dates for display
+          const startMonth = weekDate.getMonth() + 1;
+          const startDay = weekDate.getDate();
+          const endMonth = endOfWeek.getMonth() + 1;
+          const endDay = endOfWeek.getDate();
+
+          // Create a week label that shows the date range
+          const weekRange = `${startMonth}/${startDay}-${endMonth}/${endDay}`;
+
+          return {
+            weekNum,
+            weekRange,
+            endOfWeek,
+          };
+        };
+
         // Extract user data from users.json
         const userDataFromFile = fileData.filter(
           (item) => item.source === "users.json"
@@ -384,14 +427,50 @@ const Dashboard = ({ fileData }) => {
         console.log("7 days ago cutoff:", sevenDaysAgo.toISOString());
         console.log("30 days ago cutoff:", thirtyDaysAgo.toISOString());
 
-        // Filter and count projects
+        // Filter and count projects (include all projects, not just public ones)
         const projectData = fileData.filter(
           (d) =>
             (d.event === "project_created" || d.source === "projects.json") &&
             d.source !== "users.json" // Exclude users.json
         );
 
+        // Ensure all projects have the correct document_count
+        projectData.forEach((project) => {
+          project.document_count =
+            project.document_count ||
+            project.docs?.length ||
+            project.documents?.length ||
+            0;
+        });
+
         console.log(`Total projects found: ${projectData.length}`);
+
+        // Debug log the first few projects and their document counts
+        if (projectData.length > 0) {
+          console.log("Sample project document counts:");
+          for (let i = 0; i < Math.min(5, projectData.length); i++) {
+            console.log(
+              `Project "${projectData[i].name}": ${
+                projectData[i].document_count || 0
+              } documents (from docs array: ${
+                projectData[i].docs?.length || 0
+              })`
+            );
+          }
+        }
+
+        // Calculate total documents across all projects
+        const totalDocuments = projectData.reduce((sum, project) => {
+          // First try to use the document_count property
+          // If that's 0, check the docs array directly
+          const count =
+            project.document_count ||
+            project.docs?.length ||
+            project.documents?.length ||
+            0;
+          return sum + count;
+        }, 0);
+        console.log(`Total documents across all projects: ${totalDocuments}`);
 
         // Track conversations that belong to projects
         const projectConversations = conversationData.filter(
@@ -429,6 +508,11 @@ const Dashboard = ({ fileData }) => {
 
           return {
             ...project,
+            document_count:
+              project.document_count ||
+              project.docs?.length ||
+              project.documents?.length ||
+              0,
             conversationCount: conversationsForProject.length,
             last7DaysConversations: last7DaysConvs,
             last30DaysConversations: last30DaysConvs,
@@ -545,20 +629,194 @@ const Dashboard = ({ fileData }) => {
           .orderBy(["date"], ["asc"])
           .value();
 
-        // Count activities excluding users.json entries
-        const activityData = fileData.filter((d) => d.source !== "users.json");
+        // In the processData function, add weekly user calculation
+        // First, create a map of all dates to their respective week start dates
+        const dateToWeekMap = {};
+
+        // Create a map to track all unique users for each day
+        const usersByDay = {};
+
+        // Process all activities and organize them by day
+        activitiesWithUserInfo.forEach((item) => {
+          const date = new Date(item.date);
+          const firstDayOfWeek = getFirstDayOfWeek(date);
+          const weekStart = firstDayOfWeek.toISOString().split("T")[0]; // YYYY-MM-DD format
+
+          // Store the mapping from date string to week start
+          dateToWeekMap[item.dateStr] = weekStart;
+
+          // Add this user to the appropriate day
+          if (!usersByDay[item.dateStr]) {
+            usersByDay[item.dateStr] = new Set();
+          }
+          usersByDay[item.dateStr].add(item.userIdentifier);
+        });
+
+        // Group days by week
+        const daysByWeek = {};
+        Object.keys(usersByDay).forEach((dayStr) => {
+          const weekStart = dateToWeekMap[dayStr];
+          if (!daysByWeek[weekStart]) {
+            daysByWeek[weekStart] = [];
+          }
+          daysByWeek[weekStart].push(dayStr);
+        });
+
+        // Now calculate weekly users by counting all unique users across all days in each week
+        const weeklyUsers = Object.entries(daysByWeek)
+          .map(([weekStart, daysInWeek]) => {
+            // Collect all unique users from all days in this week
+            const allUsersInWeek = new Set();
+            daysInWeek.forEach((dayStr) => {
+              const usersForDay = usersByDay[dayStr];
+              if (usersForDay) {
+                usersForDay.forEach((userId) => allUsersInWeek.add(userId));
+              }
+            });
+
+            // Use the same helper function for consistent week formatting
+            const weekDate = new Date(weekStart);
+            const { weekNum, weekRange, endOfWeek } = formatWeekRange(weekDate);
+
+            // Count unique users for this week
+            const uniqueUserCount = allUsersInWeek.size;
+
+            console.log(
+              `USERS Week ${weekNum} (${weekStart} to ${
+                endOfWeek.toISOString().split("T")[0]
+              }): ${uniqueUserCount} unique users, date range: ${weekRange}`
+            );
+
+            // Also log the daily counts for debugging
+            daysInWeek.forEach((dayStr) => {
+              const dayUsers = usersByDay[dayStr] ? usersByDay[dayStr].size : 0;
+              console.log(`  - Day ${dayStr}: ${dayUsers} users`);
+            });
+
+            return {
+              date: weekStart,
+              weekNum: weekNum,
+              weekLabel: weekRange,
+              weekRange: weekRange,
+              activeUsers: uniqueUserCount,
+              daysWithActivity: daysInWeek.length,
+              userIds: Array.from(allUsersInWeek), // Store the actual user IDs for later aggregation
+            };
+          })
+          .sort((a, b) => new Date(a.date) - new Date(b.date)); // Sort by date ascending
+
+        // Calculate unique users for different time periods
+        const last7DaysUniqueUsers = new Set();
+        const last30DaysUniqueUsers = new Set();
+        const allTimeUniqueUsers = new Set(); // New Set for all-time unique users
+
+        // Process all activities to count unique users in different time periods
+        activitiesWithUserInfo.forEach((item) => {
+          const date = new Date(item.date);
+
+          // Add to all-time unique users set
+          allTimeUniqueUsers.add(item.userIdentifier);
+
+          // Check if this activity is within the last 7 days
+          if (date >= sevenDaysAgo) {
+            last7DaysUniqueUsers.add(item.userIdentifier);
+          }
+
+          // Check if this activity is within the last 30 days
+          if (date >= thirtyDaysAgo) {
+            last30DaysUniqueUsers.add(item.userIdentifier);
+          }
+        });
+
+        console.log(
+          `Unique users in last 7 days: ${last7DaysUniqueUsers.size}`
+        );
+        console.log(
+          `Unique users in last 30 days: ${last30DaysUniqueUsers.size}`
+        );
+        console.log(`All-time unique users: ${allTimeUniqueUsers.size}`);
+
+        // Use the same week calculation approach for conversations as we do for users
+        // First, create a map for conversations similar to the user map
+        const convsByDay = {};
+        const convDateToWeekMap = {};
+
+        // Process all conversations and organize them by day
+        conversationData.forEach((conv) => {
+          const date = new Date(conv.date);
+          const dayStr = conv.dateStr;
+          const firstDayOfWeek = getFirstDayOfWeek(date);
+          const weekStart = firstDayOfWeek.toISOString().split("T")[0]; // YYYY-MM-DD format
+
+          // Store the mapping from date string to week start
+          convDateToWeekMap[dayStr] = weekStart;
+
+          // Add this conversation to the appropriate day
+          if (!convsByDay[dayStr]) {
+            convsByDay[dayStr] = [];
+          }
+          convsByDay[dayStr].push(conv);
+        });
+
+        // Group days by week
+        const convDaysByWeek = {};
+        Object.keys(convsByDay).forEach((dayStr) => {
+          const weekStart = convDateToWeekMap[dayStr];
+          if (!convDaysByWeek[weekStart]) {
+            convDaysByWeek[weekStart] = [];
+          }
+          convDaysByWeek[weekStart].push(dayStr);
+        });
+
+        // Now calculate weekly conversations using the exact same approach as weekly users
+        const weeklyConversations = Object.entries(convDaysByWeek)
+          .map(([weekStart, daysInWeek]) => {
+            // Count all conversations across all days in this week
+            let totalConversations = 0;
+            daysInWeek.forEach((dayStr) => {
+              const conversationsForDay = convsByDay[dayStr] || [];
+              totalConversations += conversationsForDay.length;
+            });
+
+            // Use the same helper function for consistent week formatting
+            const weekDate = new Date(weekStart);
+            const { weekNum, weekRange, endOfWeek } = formatWeekRange(weekDate);
+
+            console.log(
+              `CONV Week ${weekNum} (${weekStart} to ${
+                endOfWeek.toISOString().split("T")[0]
+              }): ${totalConversations} conversations, date range: ${weekRange}`
+            );
+
+            // Also log the daily counts for debugging
+            daysInWeek.forEach((dayStr) => {
+              const dayConvs = convsByDay[dayStr]
+                ? convsByDay[dayStr].length
+                : 0;
+              console.log(`  - Day ${dayStr}: ${dayConvs} conversations`);
+            });
+
+            return {
+              date: weekStart,
+              weekNum: weekNum,
+              weekLabel: weekRange,
+              weekRange: weekRange,
+              conversations: totalConversations,
+            };
+          })
+          .sort((a, b) => new Date(a.date) - new Date(b.date)); // Sort by date ascending
 
         setMetrics({
           userMetrics: Object.values(userMap),
           realUserMetrics: realUserMetrics,
           dailyUsers,
+          weeklyUsers,
           dailyConversations,
           dailyProjects,
-          totalUsers: realUserMetrics.length,
+          totalUsers: allTimeUniqueUsers.size, // Use all-time unique users count instead of realUserMetrics.length
           totalConversations: conversationData.length,
           totalProjects: projectData.length,
-          totalFiles: activityData.filter((d) => d.event === "file_uploaded")
-            .length,
+          totalDocuments: totalDocuments,
           hasConversationData,
           hasProjectData,
           hasUserData,
@@ -577,6 +835,10 @@ const Dashboard = ({ fileData }) => {
           projectConversations,
           sevenDaysAgo,
           thirtyDaysAgo,
+          last7DaysUniqueUsers: last7DaysUniqueUsers.size,
+          last30DaysUniqueUsers: last30DaysUniqueUsers.size,
+          allTimeUniqueUsers: allTimeUniqueUsers.size, // Add this for clarity
+          weeklyConversations,
         });
 
         setIsLoading(false);
@@ -600,6 +862,93 @@ const Dashboard = ({ fileData }) => {
     );
   };
 
+  // Function to handle clicking on a day or week
+  const handlePeriodClick = (period) => {
+    setSelectedPeriod(period);
+    setShowModal(true);
+  };
+
+  // Function to close the modal
+  const closeModal = () => {
+    setShowModal(false);
+    setSelectedPeriod(null);
+  };
+
+  // Function to get conversations for the selected period
+  const getConversationsForPeriod = () => {
+    if (!selectedPeriod || !metrics) return [];
+
+    // If it's a day (from daily chart)
+    if (selectedPeriod.type === "day") {
+      const date = selectedPeriod.date;
+      // Filter conversations that occurred on this day
+      return metrics.conversationData.filter((conv) => conv.dateStr === date);
+    }
+
+    // If it's a week (from weekly chart)
+    if (selectedPeriod.type === "week") {
+      const weekStart = new Date(selectedPeriod.date);
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + 6); // Add 6 days to get to end of week
+
+      // Filter conversations that occurred during this week
+      return metrics.conversationData.filter((conv) => {
+        const convDate = new Date(conv.date);
+        return convDate >= weekStart && convDate <= weekEnd;
+      });
+    }
+
+    return [];
+  };
+
+  // Function to get users with conversations in the selected period
+  const getUsersWithConversationsInPeriod = () => {
+    const periodConversations = getConversationsForPeriod();
+    if (periodConversations.length === 0) return [];
+
+    // Group conversations by user
+    const userConversations = {};
+
+    periodConversations.forEach((conv) => {
+      // Try to find the user by UUID or email
+      const userUuid = conv.user_uuid || "";
+      const userEmail = conv.email || conv.email_address || "";
+
+      let userName = "Unknown User";
+      let userIdentifier = userUuid || userEmail || "unknown";
+
+      // Try to find the user in our metrics
+      const matchedUser = metrics.userMetrics.find(
+        (u) =>
+          (userUuid && u.uuid === userUuid) ||
+          (userEmail && u.email === userEmail)
+      );
+
+      if (matchedUser) {
+        userName = matchedUser.name;
+        userIdentifier = matchedUser.uuid || matchedUser.email;
+      }
+
+      // Add to our grouping
+      if (!userConversations[userIdentifier]) {
+        userConversations[userIdentifier] = {
+          name: userName,
+          conversations: [],
+        };
+      }
+
+      userConversations[userIdentifier].conversations.push(conv);
+    });
+
+    // Convert to array and sort by conversation count
+    return Object.values(userConversations)
+      .map((user) => ({
+        ...user,
+        conversationCount: user.conversations.length,
+      }))
+      .sort((a, b) => b.conversationCount - a.conversationCount);
+  };
+
   return (
     <div className="p-4 max-w-7xl mx-auto">
       <h1 className="text-2xl font-bold mb-6">Usage Analytics Dashboard</h1>
@@ -621,8 +970,8 @@ const Dashboard = ({ fileData }) => {
           icon={FolderKanban}
         />
         <MetricCard
-          title="Total Files"
-          value={metrics.totalFiles}
+          title="Total Documents"
+          value={metrics.totalDocuments}
           icon={FileText}
         />
       </div>
@@ -661,7 +1010,18 @@ const Dashboard = ({ fileData }) => {
               <h3 className="text-lg font-medium mb-4">Daily Active Users</h3>
               <div className="h-72">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={metrics.dailyUsers}>
+                  <LineChart
+                    data={metrics.dailyUsers}
+                    onClick={(data) => {
+                      if (data && data.activeLabel) {
+                        handlePeriodClick({
+                          type: "day",
+                          date: data.activeLabel,
+                          label: `Day: ${data.activeLabel}`,
+                        });
+                      }
+                    }}
+                  >
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="date" />
                     <YAxis />
@@ -680,14 +1040,38 @@ const Dashboard = ({ fileData }) => {
 
             {metrics.hasProjectData && (
               <div className="bg-white p-4 rounded-lg shadow mt-6">
-                <h3 className="text-lg font-medium mb-4">Project Activity</h3>
+                <h3 className="text-lg font-medium mb-4">
+                  Weekly Active Users
+                </h3>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                   <div className="bg-white p-4 rounded-lg shadow">
                     <h3 className="text-sm font-medium text-gray-600 mb-2">
                       Last 7 Days
                     </h3>
                     <div className="text-2xl font-bold">
-                      {metrics.last7DaysProjects}
+                      {(() => {
+                        // Get all unique users from the last 7 days
+                        const uniqueUsersLast7Days = new Set();
+                        metrics.weeklyUsers
+                          .filter((week) => {
+                            const weekDate = new Date(week.date);
+                            return (
+                              !isNaN(weekDate.getTime()) &&
+                              weekDate >= metrics.sevenDaysAgo
+                            );
+                          })
+                          .forEach((week) => {
+                            // For each week, get the days in that week
+                            const daysInWeek = week.daysWithActivity || 0;
+                            // Add the unique users from this week
+                            uniqueUsersLast7Days.add(week.activeUsers);
+                          });
+
+                        // Return the count of unique users
+                        return (
+                          metrics.last7DaysUniqueUsers || metrics.totalUsers
+                        );
+                      })()}
                     </div>
                   </div>
                   <div className="bg-white p-4 rounded-lg shadow">
@@ -695,7 +1079,29 @@ const Dashboard = ({ fileData }) => {
                       Last 30 Days
                     </h3>
                     <div className="text-2xl font-bold">
-                      {metrics.last30DaysProjects}
+                      {(() => {
+                        // Get all unique users from the last 30 days
+                        const uniqueUsersLast30Days = new Set();
+                        metrics.weeklyUsers
+                          .filter((week) => {
+                            const weekDate = new Date(week.date);
+                            return (
+                              !isNaN(weekDate.getTime()) &&
+                              weekDate >= metrics.thirtyDaysAgo
+                            );
+                          })
+                          .forEach((week) => {
+                            // For each week, get the days in that week
+                            const daysInWeek = week.daysWithActivity || 0;
+                            // Add the unique users from this week
+                            uniqueUsersLast30Days.add(week.activeUsers);
+                          });
+
+                        // Return the count of unique users
+                        return (
+                          metrics.last30DaysUniqueUsers || metrics.totalUsers
+                        );
+                      })()}
                     </div>
                   </div>
                   <div className="bg-white p-4 rounded-lg shadow">
@@ -703,347 +1109,65 @@ const Dashboard = ({ fileData }) => {
                       All Time
                     </h3>
                     <div className="text-2xl font-bold">
-                      {metrics.totalProjects}
+                      {metrics.totalUsers}
                     </div>
                   </div>
                 </div>
                 <div className="h-72">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={metrics.dailyProjects}>
+                    <BarChart
+                      data={metrics.weeklyUsers}
+                      onClick={(data) => {
+                        if (data && data.activeLabel) {
+                          const weekObj = metrics.weeklyUsers.find(
+                            (w) => w.date === data.activeLabel
+                          );
+                          handlePeriodClick({
+                            type: "week",
+                            date: data.activeLabel,
+                            weekNum: weekObj?.weekNum,
+                            weekRange: weekObj?.weekRange,
+                            label: weekObj
+                              ? `Week ${weekObj.weekNum}: ${weekObj.weekRange}`
+                              : `Week of ${data.activeLabel}`,
+                          });
+                        }
+                      }}
+                    >
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="date" />
-                      <YAxis />
-                      <Tooltip />
-                      <Legend />
-                      <Line
-                        type="monotone"
-                        dataKey="projects"
-                        stroke="#10b981"
-                        name="Projects"
+                      <XAxis
+                        dataKey="date"
+                        tickFormatter={(dateStr) => {
+                          // Format as a single date (MM/DD)
+                          const date = new Date(dateStr);
+                          return `${date.getMonth() + 1}/${date.getDate()}`;
+                        }}
                       />
-                    </LineChart>
+                      <YAxis />
+                      <Tooltip
+                        labelFormatter={(dateStr) => {
+                          // Find the corresponding week object for better labeling
+                          const weekObj = metrics.weeklyUsers.find(
+                            (w) => w.date === dateStr
+                          );
+                          if (weekObj) {
+                            return `Week ${weekObj.weekNum}: ${weekObj.weekRange}`;
+                          }
+                          const date = new Date(dateStr);
+                          return `Week Starting ${
+                            date.getMonth() + 1
+                          }/${date.getDate()}/${date.getFullYear()}`;
+                        }}
+                      />
+                      <Legend />
+                      <Bar
+                        dataKey="activeUsers"
+                        fill="#10b981"
+                        name="Active Users"
+                      />
+                    </BarChart>
                   </ResponsiveContainer>
                 </div>
-
-                <div className="mt-8">
-                  <h4 className="text-md font-medium mb-4">
-                    Top Recent Projects
-                  </h4>
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full bg-white">
-                      <thead>
-                        <tr className="bg-gray-100">
-                          <th className="px-4 py-2 text-left">Project</th>
-                          <th className="px-4 py-2 text-left">Filename</th>
-                          <th className="px-4 py-2 text-left">User</th>
-                          <th className="px-4 py-2 text-left">Date</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {metrics.projectData
-                          .sort((a, b) => new Date(b.date) - new Date(a.date))
-                          .slice(0, 5)
-                          .map((project, index) => {
-                            // Get creator name - either directly from project or via user lookup
-                            let creatorName = project.creator_name || "Unknown";
-
-                            // If no creator name but we have UUID, try to look it up
-                            if (!creatorName && project.user_uuid) {
-                              const userByUuid = metrics.userMetrics.find(
-                                (u) => u.uuid === project.user_uuid
-                              );
-                              if (userByUuid) {
-                                creatorName = userByUuid.name;
-                              }
-                            }
-
-                            return (
-                              <tr
-                                key={index}
-                                className={index % 2 === 0 ? "bg-gray-50" : ""}
-                              >
-                                <td className="px-4 py-2 text-sm w-1/2">
-                                  <div className="flex items-center">
-                                    <ProjectName project={project} />
-                                    {project.document_count > 0 && (
-                                      <span className="ml-2 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full">
-                                        {project.document_count} doc
-                                        {project.document_count !== 1
-                                          ? "s"
-                                          : ""}
-                                      </span>
-                                    )}
-                                  </div>
-                                </td>
-                                <td className="px-4 py-2 text-sm">
-                                  {project.filename || "-"}
-                                </td>
-                                <td className="px-4 py-2 text-sm">
-                                  {creatorName}
-                                </td>
-                                <td className="px-4 py-2 text-sm">
-                                  {(() => {
-                                    try {
-                                      const date = new Date(project.date);
-                                      return !isNaN(date.getTime())
-                                        ? date.toLocaleDateString()
-                                        : "Invalid date";
-                                    } catch (error) {
-                                      return "Error";
-                                    }
-                                  })()}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <div className="mt-8">
-                  <h4 className="text-md font-medium mb-4">
-                    Top Project Creators
-                  </h4>
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full bg-white">
-                      <thead>
-                        <tr className="bg-gray-100">
-                          <th className="px-4 py-2 text-left">User</th>
-                          <th className="px-4 py-2 text-center">Last 7 Days</th>
-                          <th className="px-4 py-2 text-center">
-                            Last 30 Days
-                          </th>
-                          <th className="px-4 py-2 text-center">All Time</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {_.chain(metrics.realUserMetrics)
-                          .filter((user) => user.projects > 0)
-                          .orderBy(["projects"], ["desc"])
-                          .slice(0, 5)
-                          .map((user, index) => {
-                            // Get this user's projects
-                            const userProjects = metrics.projectData.filter(
-                              (row) =>
-                                row.email === user.email ||
-                                row.email_address === user.email ||
-                                (row.user_uuid && row.user_uuid === user.uuid)
-                            );
-
-                            // Count projects in time periods
-                            const projects7d = userProjects.filter(
-                              (row) =>
-                                new Date(row.date).getTime() >=
-                                metrics.sevenDaysAgo.getTime()
-                            ).length;
-
-                            const projects30d = userProjects.filter(
-                              (row) =>
-                                new Date(row.date).getTime() >=
-                                metrics.thirtyDaysAgo.getTime()
-                            ).length;
-
-                            return (
-                              <tr
-                                key={index}
-                                className={index % 2 === 0 ? "bg-gray-50" : ""}
-                              >
-                                <td className="px-4 py-2 text-sm font-medium">
-                                  {user.name}
-                                </td>
-                                <td className="px-4 py-2 text-sm text-center">
-                                  {projects7d}
-                                </td>
-                                <td className="px-4 py-2 text-sm text-center">
-                                  {projects30d}
-                                </td>
-                                <td className="px-4 py-2 text-sm text-center">
-                                  {user.projects}
-                                </td>
-                              </tr>
-                            );
-                          })
-                          .value()}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {metrics.projectConversations &&
-                  metrics.projectConversations.length > 0 && (
-                    <div className="mt-8">
-                      <h4 className="text-md font-medium mb-4">
-                        Project Conversations Summary
-                      </h4>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                        <div className="bg-white p-4 rounded-lg border border-gray-200">
-                          <h3 className="text-sm font-medium text-gray-600 mb-2">
-                            Projects with Conversations
-                          </h3>
-                          <div className="text-xl font-bold">
-                            {metrics.projectsWithConversations || 0}
-                          </div>
-                          <div className="text-xs text-gray-500 mt-1">
-                            {metrics.totalProjects > 0
-                              ? `${Math.round(
-                                  (metrics.projectsWithConversations /
-                                    metrics.totalProjects) *
-                                    100
-                                )}% of all projects`
-                              : "0% of all projects"}
-                          </div>
-                        </div>
-                        <div className="bg-white p-4 rounded-lg border border-gray-200">
-                          <h3 className="text-sm font-medium text-gray-600 mb-2">
-                            Conversations in Projects
-                          </h3>
-                          <div className="text-xl font-bold">
-                            {metrics.projectConversations?.length || 0}
-                          </div>
-                          <div className="text-xs text-gray-500 mt-1">
-                            {metrics.totalConversations > 0
-                              ? `${Math.round(
-                                  (metrics.projectConversations.length /
-                                    metrics.totalConversations) *
-                                    100
-                                )}% of all conversations`
-                              : "0% of all conversations"}
-                          </div>
-                        </div>
-                        <div className="bg-white p-4 rounded-lg border border-gray-200">
-                          <h3 className="text-sm font-medium text-gray-600 mb-2">
-                            Avg. Conversations per Project
-                          </h3>
-                          <div className="text-xl font-bold">
-                            {metrics.projectsWithConversations > 0
-                              ? (
-                                  metrics.projectConversations.length /
-                                  metrics.projectsWithConversations
-                                ).toFixed(1)
-                              : "0"}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="overflow-x-auto">
-                        <table className="min-w-full bg-white">
-                          <thead>
-                            <tr className="bg-gray-100">
-                              <th className="px-4 py-2 text-left">Project</th>
-                              <th className="px-4 py-2 text-left">User</th>
-                              <th className="px-4 py-2 text-center">
-                                Conversations
-                              </th>
-                              <th className="px-4 py-2 text-left">
-                                Last Conversation
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {metrics.projectsWithConversationCounts
-                              .filter(
-                                (project) => project.conversationCount > 0
-                              )
-                              .sort(
-                                (a, b) =>
-                                  b.conversationCount - a.conversationCount
-                              )
-                              .slice(0, 5)
-                              .map((project, index) => {
-                                // Get creator name - either directly from project or via user lookup
-                                let creatorName =
-                                  project.creator_name || "Unknown";
-
-                                // If no creator name but we have UUID, try to look it up
-                                if (!creatorName && project.user_uuid) {
-                                  const userByUuid = metrics.userMetrics.find(
-                                    (u) => u.uuid === project.user_uuid
-                                  );
-                                  if (userByUuid) {
-                                    creatorName = userByUuid.name;
-                                  }
-                                }
-
-                                return (
-                                  <tr
-                                    key={index}
-                                    className={
-                                      index % 2 === 0 ? "bg-gray-50" : ""
-                                    }
-                                  >
-                                    <td className="px-4 py-2 text-sm">
-                                      <div className="flex items-center">
-                                        <ProjectName project={project} />
-                                        {project.document_count > 0 && (
-                                          <span className="ml-2 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full">
-                                            {project.document_count} doc
-                                            {project.document_count !== 1
-                                              ? "s"
-                                              : ""}
-                                          </span>
-                                        )}
-                                      </div>
-                                    </td>
-                                    <td className="px-4 py-2 text-sm">
-                                      {creatorName}
-                                    </td>
-                                    <td className="px-4 py-2 text-sm text-center">
-                                      {project.conversationCount}
-                                    </td>
-                                    <td className="px-4 py-2 text-sm">
-                                      {project.conversationCount > 0
-                                        ? (() => {
-                                            try {
-                                              const projectConvs =
-                                                metrics.projectConversations.filter(
-                                                  (conv) =>
-                                                    conv.project_uuid ===
-                                                      project.uuid ||
-                                                    conv.project_id ===
-                                                      project.uuid
-                                                );
-
-                                              if (projectConvs.length === 0)
-                                                return "N/A";
-
-                                              const validDates = projectConvs
-                                                .map((conv) => {
-                                                  const date = new Date(
-                                                    conv.date
-                                                  );
-                                                  return isNaN(date.getTime())
-                                                    ? null
-                                                    : date.getTime();
-                                                })
-                                                .filter(
-                                                  (time) => time !== null
-                                                );
-
-                                              if (validDates.length === 0)
-                                                return "Invalid date";
-
-                                              return new Date(
-                                                Math.max(...validDates)
-                                              ).toLocaleDateString();
-                                            } catch (error) {
-                                              console.error(
-                                                "Error formatting conversation date:",
-                                                error
-                                              );
-                                              return "Error";
-                                            }
-                                          })()
-                                        : "N/A"}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
               </div>
             )}
           </>
@@ -1102,9 +1226,6 @@ const Dashboard = ({ fileData }) => {
 
                 return {
                   name: user.name,
-                  email: user.email,
-                  phone: user.phone || "Not provided",
-                  uuid: user.uuid || "N/A",
                   totalActivities: user.totalActions,
                   conversations: user.conversations,
                   projects: user.projects,
@@ -1113,8 +1234,6 @@ const Dashboard = ({ fileData }) => {
               })}
               columns={[
                 { key: "name", label: "Name" },
-                { key: "email", label: "Email" },
-                { key: "phone", label: "Phone" },
                 { key: "totalActivities", label: "Total Activities" },
                 { key: "conversations", label: "Conversations" },
                 { key: "projects", label: "Projects" },
@@ -1219,14 +1338,13 @@ const Dashboard = ({ fileData }) => {
 
                     return {
                       name: user.name,
-                      email: user.email,
                       conversations7d,
                       conversations30d,
                       conversationsTotal: user.conversations,
                       lastSeen: lastSeenDate,
                     };
                   })
-                  .orderBy(["conversationsTotal"], ["desc"])
+                  .orderBy(["conversations7d"], ["desc"]) // Sort by most conversations in the last 7 days
                   .value()}
                 columns={[
                   { key: "name", label: "User" },
@@ -1254,7 +1372,18 @@ const Dashboard = ({ fileData }) => {
               <h3 className="text-lg font-medium mb-4">Daily Conversations</h3>
               <div className="h-72">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={metrics.dailyConversations}>
+                  <LineChart
+                    data={metrics.dailyConversations}
+                    onClick={(data) => {
+                      if (data && data.activeLabel) {
+                        handlePeriodClick({
+                          type: "day",
+                          date: data.activeLabel,
+                          label: `Day: ${data.activeLabel}`,
+                        });
+                      }
+                    }}
+                  >
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="date" />
                     <YAxis />
@@ -1267,6 +1396,65 @@ const Dashboard = ({ fileData }) => {
                       name="Conversations"
                     />
                   </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-lg shadow">
+              <h3 className="text-lg font-medium mb-4">Weekly Conversations</h3>
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={metrics.weeklyConversations}
+                    onClick={(data) => {
+                      if (data && data.activeLabel) {
+                        const weekObj = metrics.weeklyConversations.find(
+                          (w) => w.date === data.activeLabel
+                        );
+                        handlePeriodClick({
+                          type: "week",
+                          date: data.activeLabel,
+                          weekNum: weekObj?.weekNum,
+                          weekRange: weekObj?.weekRange,
+                          label: weekObj
+                            ? `Week ${weekObj.weekNum}: ${weekObj.weekRange}`
+                            : `Week of ${data.activeLabel}`,
+                        });
+                      }
+                    }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="date"
+                      tickFormatter={(dateStr) => {
+                        // Format as a single date (MM/DD)
+                        const date = new Date(dateStr);
+                        return `${date.getMonth() + 1}/${date.getDate()}`;
+                      }}
+                    />
+                    <YAxis />
+                    <Tooltip
+                      labelFormatter={(dateStr) => {
+                        // Find the corresponding week object for better labeling
+                        const weekObj = metrics.weeklyConversations.find(
+                          (w) => w.date === dateStr
+                        );
+                        if (weekObj) {
+                          return `Week ${weekObj.weekNum}: ${weekObj.weekRange} (${weekObj.conversations} conversations)`;
+                        }
+                        const date = new Date(dateStr);
+                        return `Week Starting ${
+                          date.getMonth() + 1
+                        }/${date.getDate()}/${date.getFullYear()}`;
+                      }}
+                    />
+                    <Legend />
+                    <Bar
+                      dataKey="conversations"
+                      fill="#3b82f6"
+                      name="Conversations"
+                    />
+                  </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
@@ -1349,12 +1537,7 @@ const Dashboard = ({ fileData }) => {
                             <th className="px-4 py-2 text-left">Creator</th>
                             <th className="px-4 py-2 text-center">Documents</th>
                             <th className="px-4 py-2 text-left">Date</th>
-                            <th className="px-4 py-2 text-center">
-                              Last 7 Days
-                            </th>
-                            <th className="px-4 py-2 text-center">
-                              Last 30 Days
-                            </th>
+                            <th className="px-4 py-2 text-center">Access</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1419,30 +1602,17 @@ const Dashboard = ({ fileData }) => {
                                     })()}
                                   </td>
                                   <td className="px-4 py-2 text-sm text-center">
-                                    {(() => {
-                                      try {
-                                        const date = new Date(project.date);
-                                        return !isNaN(date.getTime()) &&
-                                          date >= metrics.sevenDaysAgo
-                                          ? "✓"
-                                          : "-";
-                                      } catch (error) {
-                                        return "-";
-                                      }
-                                    })()}
-                                  </td>
-                                  <td className="px-4 py-2 text-sm text-center">
-                                    {(() => {
-                                      try {
-                                        const date = new Date(project.date);
-                                        return !isNaN(date.getTime()) &&
-                                          date >= metrics.thirtyDaysAgo
-                                          ? "✓"
-                                          : "-";
-                                      } catch (error) {
-                                        return "-";
-                                      }
-                                    })()}
+                                    <span
+                                      className={`px-2 py-1 text-xs rounded-full ${
+                                        project.is_private
+                                          ? "bg-red-100 text-red-700"
+                                          : "bg-green-100 text-green-700"
+                                      }`}
+                                    >
+                                      {project.is_private
+                                        ? "Private"
+                                        : "Public"}
+                                    </span>
                                   </td>
                                 </tr>
                               );
@@ -1486,7 +1656,6 @@ const Dashboard = ({ fileData }) => {
 
                     return {
                       name: user.name,
-                      email: user.email,
                       projects7d: userProjects.filter(
                         (row) =>
                           new Date(row.date).getTime() >=
@@ -1519,27 +1688,6 @@ const Dashboard = ({ fileData }) => {
             </div>
 
             <div className="bg-white p-4 rounded-lg shadow">
-              <h3 className="text-lg font-medium mb-4">Projects Timeline</h3>
-              <div className="h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={metrics.dailyProjects}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Line
-                      type="monotone"
-                      dataKey="projects"
-                      stroke="#10b981"
-                      name="Projects"
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            <div className="bg-white p-4 rounded-lg shadow">
               <h3 className="text-lg font-medium mb-4">Project List</h3>
               <div className="overflow-x-auto">
                 <table className="min-w-full bg-white">
@@ -1549,8 +1697,7 @@ const Dashboard = ({ fileData }) => {
                       <th className="px-4 py-2 text-left">Creator</th>
                       <th className="px-4 py-2 text-center">Documents</th>
                       <th className="px-4 py-2 text-left">Date</th>
-                      <th className="px-4 py-2 text-center">Last 7 Days</th>
-                      <th className="px-4 py-2 text-center">Last 30 Days</th>
+                      <th className="px-4 py-2 text-center">Access</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1578,12 +1725,6 @@ const Dashboard = ({ fileData }) => {
                             <td className="px-4 py-2 text-sm">
                               <div className="flex items-center">
                                 <ProjectName project={project} />
-                                {project.document_count > 0 && (
-                                  <span className="ml-2 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full">
-                                    {project.document_count} doc
-                                    {project.document_count !== 1 ? "s" : ""}
-                                  </span>
-                                )}
                               </div>
                             </td>
                             <td className="px-4 py-2 text-sm">{creatorName}</td>
@@ -1603,30 +1744,15 @@ const Dashboard = ({ fileData }) => {
                               })()}
                             </td>
                             <td className="px-4 py-2 text-sm text-center">
-                              {(() => {
-                                try {
-                                  const date = new Date(project.date);
-                                  return !isNaN(date.getTime()) &&
-                                    date >= metrics.sevenDaysAgo
-                                    ? "✓"
-                                    : "-";
-                                } catch (error) {
-                                  return "-";
-                                }
-                              })()}
-                            </td>
-                            <td className="px-4 py-2 text-sm text-center">
-                              {(() => {
-                                try {
-                                  const date = new Date(project.date);
-                                  return !isNaN(date.getTime()) &&
-                                    date >= metrics.thirtyDaysAgo
-                                    ? "✓"
-                                    : "-";
-                                } catch (error) {
-                                  return "-";
-                                }
-                              })()}
+                              <span
+                                className={`px-2 py-1 text-xs rounded-full ${
+                                  project.is_private
+                                    ? "bg-red-100 text-red-700"
+                                    : "bg-green-100 text-green-700"
+                                }`}
+                              >
+                                {project.is_private ? "Private" : "Public"}
+                              </span>
                             </td>
                           </tr>
                         );
@@ -1635,9 +1761,123 @@ const Dashboard = ({ fileData }) => {
                 </table>
               </div>
             </div>
+
+            <div className="mt-8">
+              <h4 className="text-md font-medium mb-4">Top Project Creators</h4>
+              <div className="overflow-x-auto">
+                <table className="min-w-full bg-white">
+                  <thead>
+                    <tr className="bg-gray-100">
+                      <th className="px-4 py-2 text-left">User</th>
+                      <th className="px-4 py-2 text-center">Last 7 Days</th>
+                      <th className="px-4 py-2 text-center">Last 30 Days</th>
+                      <th className="px-4 py-2 text-center">All Time</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {_.chain(metrics.realUserMetrics)
+                      .filter((user) => user.projects > 0)
+                      .orderBy(["projects"], ["desc"])
+                      .slice(0, 5)
+                      .map((user, index) => {
+                        // Get this user's projects
+                        const userProjects = metrics.projectData.filter(
+                          (row) =>
+                            row.email === user.email ||
+                            row.email_address === user.email ||
+                            (row.user_uuid && row.user_uuid === user.uuid)
+                        );
+
+                        // Count projects in time periods
+                        const projects7d = userProjects.filter(
+                          (row) =>
+                            new Date(row.date).getTime() >=
+                            metrics.sevenDaysAgo.getTime()
+                        ).length;
+
+                        const projects30d = userProjects.filter(
+                          (row) =>
+                            new Date(row.date).getTime() >=
+                            metrics.thirtyDaysAgo.getTime()
+                        ).length;
+
+                        return (
+                          <tr
+                            key={index}
+                            className={index % 2 === 0 ? "bg-gray-50" : ""}
+                          >
+                            <td className="px-4 py-2 text-sm font-medium">
+                              {user.name}
+                            </td>
+                            <td className="px-4 py-2 text-sm text-center">
+                              {projects7d}
+                            </td>
+                            <td className="px-4 py-2 text-sm text-center">
+                              {projects30d}
+                            </td>
+                            <td className="px-4 py-2 text-sm text-center">
+                              {user.projects}
+                            </td>
+                          </tr>
+                        );
+                      })
+                      .value()}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         )}
       </div>
+
+      {/* Modal for showing conversations by user for selected period */}
+      {showModal && selectedPeriod && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-lg max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="flex justify-between items-center border-b p-4">
+              <h3 className="text-lg font-medium">
+                Conversations for {selectedPeriod.label}
+              </h3>
+              <button
+                onClick={closeModal}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-4 overflow-auto flex-grow">
+              {getUsersWithConversationsInPeriod().length > 0 ? (
+                <table className="min-w-full bg-white">
+                  <thead>
+                    <tr className="bg-gray-100">
+                      <th className="px-4 py-2 text-left">User</th>
+                      <th className="px-4 py-2 text-center">Conversations</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {getUsersWithConversationsInPeriod().map((user, index) => (
+                      <tr
+                        key={index}
+                        className={index % 2 === 0 ? "bg-gray-50" : ""}
+                      >
+                        <td className="px-4 py-2 text-sm">{user.name}</td>
+                        <td className="px-4 py-2 text-sm text-center">
+                          {user.conversationCount}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="text-center text-gray-500">
+                  No conversations found for this period.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
