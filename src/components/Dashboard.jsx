@@ -34,12 +34,13 @@ const Dashboard = ({ fileData }) => {
 
     const processData = () => {
       try {
-        // Helper function to get the first day of the week (Sunday) for a given date
+        // Helper function to get the first day of the week (Monday) for a given date
         const getFirstDayOfWeek = (date) => {
           const dayOfWeek = date.getDay(); // 0 = Sunday, 1 = Monday, etc.
           const firstDayOfWeek = new Date(date);
-          // Set to first day of week (Sunday)
-          firstDayOfWeek.setDate(date.getDate() - dayOfWeek);
+          // Set to first day of week (Monday)
+          const daysToSubtract = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+          firstDayOfWeek.setDate(date.getDate() - daysToSubtract);
           return firstDayOfWeek;
         };
 
@@ -53,9 +54,9 @@ const Dashboard = ({ fileData }) => {
             ((weekDate - startOfYear) / 86400000 + startOfYear.getDay() + 1) / 7
           );
 
-          // Calculate the end date of the week (Saturday)
+          // Calculate the end date of the week (Sunday)
           const endOfWeek = new Date(weekDate);
-          endOfWeek.setDate(weekDate.getDate() + 6); // Add 6 days to get to Saturday
+          endOfWeek.setDate(weekDate.getDate() + 6); // Add 6 days to get to Sunday
 
           // Format dates for display
           const startMonth = weekDate.getMonth() + 1;
@@ -636,6 +637,59 @@ const Dashboard = ({ fileData }) => {
         // Create a map to track all unique users for each day
         const usersByDay = {};
 
+        // Find the min and max dates to establish our date range
+        let minDate = null;
+        let maxDate = null;
+
+        activitiesWithUserInfo.forEach((item) => {
+          const date = new Date(item.date);
+          if (!minDate || date < minDate) {
+            minDate = date;
+          }
+          if (!maxDate || date > maxDate) {
+            maxDate = date;
+          }
+        });
+
+        console.log(
+          `Date range: ${minDate?.toDateString()} to ${maxDate?.toDateString()}`
+        );
+
+        // Create standard weekly buckets based on our date range
+        const standardWeeks = [];
+        if (minDate && maxDate) {
+          // Start from the Monday of the week containing minDate
+          let currentWeekStart = getFirstDayOfWeek(minDate);
+
+          // Create weekly buckets until we reach or exceed maxDate
+          while (currentWeekStart <= maxDate) {
+            const weekEnd = new Date(currentWeekStart);
+            weekEnd.setDate(currentWeekStart.getDate() + 6); // Add 6 days to get to Sunday
+
+            const weekStartStr = currentWeekStart.toISOString().split("T")[0];
+            const { weekNum, weekRange } = formatWeekRange(currentWeekStart);
+
+            standardWeeks.push({
+              startDate: currentWeekStart,
+              endDate: weekEnd,
+              startDateStr: weekStartStr,
+              weekNum,
+              weekRange,
+            });
+
+            // Move to next Monday
+            currentWeekStart = new Date(currentWeekStart);
+            currentWeekStart.setDate(currentWeekStart.getDate() + 7);
+          }
+        }
+
+        console.log(`Created ${standardWeeks.length} standard week buckets`);
+        standardWeeks.forEach((week, i) => {
+          console.log(
+            `Week ${i + 1}: ${week.startDateStr} (${week.weekRange})`
+          );
+        });
+
         // Process all activities and organize them by day
         activitiesWithUserInfo.forEach((item) => {
           const date = new Date(item.date);
@@ -652,7 +706,7 @@ const Dashboard = ({ fileData }) => {
           usersByDay[item.dateStr].add(item.userIdentifier);
         });
 
-        // Group days by week
+        // Group days by week - using a more standardized approach
         const daysByWeek = {};
         Object.keys(usersByDay).forEach((dayStr) => {
           const weekStart = dateToWeekMap[dayStr];
@@ -663,47 +717,47 @@ const Dashboard = ({ fileData }) => {
         });
 
         // Now calculate weekly users by counting all unique users across all days in each week
-        const weeklyUsers = Object.entries(daysByWeek)
-          .map(([weekStart, daysInWeek]) => {
-            // Collect all unique users from all days in this week
+        // We'll use a standard set of weeks rather than creating a week for each unique date
+        const weeklyUsers = standardWeeks
+          .map((week) => {
+            const { startDate, endDate, startDateStr, weekNum, weekRange } =
+              week;
+
+            // Find all days that fall within this week
+            const daysInThisWeek = Object.keys(usersByDay).filter((dayStr) => {
+              const dayDate = new Date(dayStr);
+              return dayDate >= startDate && dayDate <= endDate;
+            });
+
+            // Collect all unique users from these days
             const allUsersInWeek = new Set();
-            daysInWeek.forEach((dayStr) => {
+            daysInThisWeek.forEach((dayStr) => {
               const usersForDay = usersByDay[dayStr];
               if (usersForDay) {
                 usersForDay.forEach((userId) => allUsersInWeek.add(userId));
               }
             });
 
-            // Use the same helper function for consistent week formatting
-            const weekDate = new Date(weekStart);
-            const { weekNum, weekRange, endOfWeek } = formatWeekRange(weekDate);
-
             // Count unique users for this week
             const uniqueUserCount = allUsersInWeek.size;
 
             console.log(
-              `USERS Week ${weekNum} (${weekStart} to ${
-                endOfWeek.toISOString().split("T")[0]
+              `USERS Week ${weekNum} (${startDateStr} to ${
+                endDate.toISOString().split("T")[0]
               }): ${uniqueUserCount} unique users, date range: ${weekRange}`
             );
 
-            // Also log the daily counts for debugging
-            daysInWeek.forEach((dayStr) => {
-              const dayUsers = usersByDay[dayStr] ? usersByDay[dayStr].size : 0;
-              console.log(`  - Day ${dayStr}: ${dayUsers} users`);
-            });
-
             return {
-              date: weekStart,
-              weekNum: weekNum,
+              date: startDateStr,
+              weekNum,
               weekLabel: weekRange,
-              weekRange: weekRange,
+              weekRange,
               activeUsers: uniqueUserCount,
-              daysWithActivity: daysInWeek.length,
-              userIds: Array.from(allUsersInWeek), // Store the actual user IDs for later aggregation
+              daysWithActivity: daysInThisWeek.length,
+              userIds: Array.from(allUsersInWeek),
             };
           })
-          .sort((a, b) => new Date(a.date) - new Date(b.date)); // Sort by date ascending
+          .filter((week) => week.daysWithActivity > 0); // Only include weeks with activity
 
         // Calculate unique users for different time periods
         const last7DaysUniqueUsers = new Set();
@@ -769,42 +823,39 @@ const Dashboard = ({ fileData }) => {
         });
 
         // Now calculate weekly conversations using the exact same approach as weekly users
-        const weeklyConversations = Object.entries(convDaysByWeek)
-          .map(([weekStart, daysInWeek]) => {
-            // Count all conversations across all days in this week
+        const weeklyConversations = standardWeeks
+          .map((week) => {
+            const { startDate, endDate, startDateStr, weekNum, weekRange } =
+              week;
+
+            // Find all days that fall within this week
+            const daysInThisWeek = Object.keys(convsByDay).filter((dayStr) => {
+              const dayDate = new Date(dayStr);
+              return dayDate >= startDate && dayDate <= endDate;
+            });
+
+            // Count all conversations in these days
             let totalConversations = 0;
-            daysInWeek.forEach((dayStr) => {
+            daysInThisWeek.forEach((dayStr) => {
               const conversationsForDay = convsByDay[dayStr] || [];
               totalConversations += conversationsForDay.length;
             });
 
-            // Use the same helper function for consistent week formatting
-            const weekDate = new Date(weekStart);
-            const { weekNum, weekRange, endOfWeek } = formatWeekRange(weekDate);
-
             console.log(
-              `CONV Week ${weekNum} (${weekStart} to ${
-                endOfWeek.toISOString().split("T")[0]
+              `CONV Week ${weekNum} (${startDateStr} to ${
+                endDate.toISOString().split("T")[0]
               }): ${totalConversations} conversations, date range: ${weekRange}`
             );
 
-            // Also log the daily counts for debugging
-            daysInWeek.forEach((dayStr) => {
-              const dayConvs = convsByDay[dayStr]
-                ? convsByDay[dayStr].length
-                : 0;
-              console.log(`  - Day ${dayStr}: ${dayConvs} conversations`);
-            });
-
             return {
-              date: weekStart,
-              weekNum: weekNum,
+              date: startDateStr,
+              weekNum,
               weekLabel: weekRange,
-              weekRange: weekRange,
+              weekRange,
               conversations: totalConversations,
             };
           })
-          .sort((a, b) => new Date(a.date) - new Date(b.date)); // Sort by date ascending
+          .filter((week) => week.conversations > 0); // Only include weeks with conversations
 
         setMetrics({
           userMetrics: Object.values(userMap),
@@ -1054,7 +1105,24 @@ const Dashboard = ({ fileData }) => {
                     }}
                   >
                     <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" />
+                    <XAxis
+                      dataKey="date"
+                      tickFormatter={(dateStr) => {
+                        // Format as MM/DD
+                        const date = new Date(dateStr);
+                        return `${date.getMonth() + 1}/${date.getDate()}`;
+                      }}
+                      scale="point"
+                      interval={(index, value) => {
+                        // Only show labels for dates that are Mondays (weekday 1)
+                        const date = new Date(value);
+                        return date.getDay() === 1; // Returns true for Monday, which means include this tick
+                      }}
+                      angle={-45}
+                      textAnchor="end"
+                      height={60}
+                      tick={{ fontSize: 11 }}
+                    />
                     <YAxis />
                     <Tooltip />
                     <Legend />
@@ -1173,6 +1241,12 @@ const Dashboard = ({ fileData }) => {
                           const date = new Date(dateStr);
                           return `${date.getMonth() + 1}/${date.getDate()}`;
                         }}
+                        scale="point"
+                        interval={0}
+                        angle={-45}
+                        textAnchor="end"
+                        height={60}
+                        tick={{ fontSize: 11 }}
                       />
                       <YAxis />
                       <Tooltip
@@ -1195,6 +1269,8 @@ const Dashboard = ({ fileData }) => {
                         dataKey="activeUsers"
                         fill="#10b981"
                         name="Active Users"
+                        barSize={20}
+                        maxBarSize={20}
                       />
                     </BarChart>
                   </ResponsiveContainer>
@@ -1416,7 +1492,24 @@ const Dashboard = ({ fileData }) => {
                     }}
                   >
                     <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" />
+                    <XAxis
+                      dataKey="date"
+                      tickFormatter={(dateStr) => {
+                        // Format as MM/DD
+                        const date = new Date(dateStr);
+                        return `${date.getMonth() + 1}/${date.getDate()}`;
+                      }}
+                      scale="point"
+                      interval={(index, value) => {
+                        // Only show labels for dates that are Mondays (weekday 1)
+                        const date = new Date(value);
+                        return date.getDay() === 1; // Returns true for Monday, which means include this tick
+                      }}
+                      angle={-45}
+                      textAnchor="end"
+                      height={60}
+                      tick={{ fontSize: 11 }}
+                    />
                     <YAxis />
                     <Tooltip />
                     <Legend />
@@ -1462,6 +1555,12 @@ const Dashboard = ({ fileData }) => {
                         const date = new Date(dateStr);
                         return `${date.getMonth() + 1}/${date.getDate()}`;
                       }}
+                      scale="point"
+                      interval={0}
+                      angle={-45}
+                      textAnchor="end"
+                      height={60}
+                      tick={{ fontSize: 11 }}
                     />
                     <YAxis />
                     <Tooltip
@@ -1484,6 +1583,8 @@ const Dashboard = ({ fileData }) => {
                       dataKey="conversations"
                       fill="#3b82f6"
                       name="Conversations"
+                      barSize={20}
+                      maxBarSize={20}
                     />
                   </BarChart>
                 </ResponsiveContainer>
