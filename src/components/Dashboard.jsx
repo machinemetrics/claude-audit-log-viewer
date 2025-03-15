@@ -839,6 +839,9 @@ const Dashboard = ({ fileData }) => {
           last30DaysUniqueUsers: last30DaysUniqueUsers.size,
           allTimeUniqueUsers: allTimeUniqueUsers.size, // Add this for clarity
           weeklyConversations,
+          convDateToWeekMap,
+          convsByDay,
+          convDaysByWeek,
         });
 
         setIsLoading(false);
@@ -891,11 +894,39 @@ const Dashboard = ({ fileData }) => {
       const weekEnd = new Date(weekStart);
       weekEnd.setDate(weekStart.getDate() + 6); // Add 6 days to get to end of week
 
-      // Filter conversations that occurred during this week
-      return metrics.conversationData.filter((conv) => {
-        const convDate = new Date(conv.date);
-        return convDate >= weekStart && convDate <= weekEnd;
-      });
+      // Find the correct conversations for this week using the same approach as in the weekly calculation
+      // This ensures the modal data matches the chart data
+      const weekStartStr = weekStart.toISOString().split("T")[0]; // YYYY-MM-DD format
+
+      // Option 1: Use the weekStart to match directly with our weekly calculation
+      const weekData = metrics.weeklyConversations.find(
+        (w) => w.date === weekStartStr
+      );
+
+      if (weekData) {
+        console.log(
+          `Selected week ${weekData.weekNum}: ${weekData.weekRange} with ${weekData.conversations} conversations`
+        );
+      }
+
+      // These are all the conversations that should be in this week
+      const daysInSelectedWeek = [];
+
+      // Get all the days that belong to this week
+      Object.entries(metrics.convDateToWeekMap || {}).forEach(
+        ([dayStr, weekStartDate]) => {
+          if (weekStartDate === weekStartStr) {
+            daysInSelectedWeek.push(dayStr);
+          }
+        }
+      );
+
+      console.log(`Days in selected week: ${daysInSelectedWeek.join(", ")}`);
+
+      // Get all conversations from these days
+      return metrics.conversationData.filter((conv) =>
+        daysInSelectedWeek.includes(conv.dateStr)
+      );
     }
 
     return [];
